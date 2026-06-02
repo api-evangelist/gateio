@@ -1,0 +1,1880 @@
+asyncapi: '2.6.0'
+info:
+  title: Gate.io WebSocket API V4
+  version: '4.0.0'
+  description: |
+    AsyncAPI 2.6 description of Gate.io's WebSocket API V4 covering the public Spot
+    and Futures channels, plus the private user-data channels reached via the same
+    WebSocket connections.
+
+    Source documents:
+      - Spot WebSocket V4: https://www.gate.io/docs/developers/apiv4/ws/en/
+      - Futures WebSocket V4: https://www.gate.io/docs/developers/futures/ws/en/
+
+    Common envelope
+    ---------------
+    Every message (request and notification) carries the envelope:
+
+        {
+          "time":     <int seconds>,
+          "time_ms":  <int milliseconds>,    # server messages only
+          "id":       <int, optional>,       # client request only
+          "channel":  "<channel name>",
+          "event":    "subscribe" | "unsubscribe" | "update" | "all" | "",
+          "payload":  [ ... ],               # client only
+          "error":    null | { "code": int, "message": str },
+          "result":   { ... } | [ ... ] | null,
+          "auth":     { "method": "api_key", "KEY": "<api key>", "SIGN": "<hmac>" }
+        }
+
+    Authentication (private channels)
+    ---------------------------------
+    Private channels (user orders, trades, balances, positions, etc.) require an
+    `auth` object on the subscribe/unsubscribe request. The signature is built as:
+
+        signature_string = "channel=<channel>&event=<event>&time=<time>"
+        SIGN = HexEncode( HMAC_SHA512(api_secret, signature_string) )
+
+    The request `time` value must be within 60 seconds of the server clock. The
+    same Gate APIv4 key pair used for the REST API is used here.
+
+    Order book maintenance
+    ----------------------
+    Both `spot.order_book_update` and `futures.order_book_update` publish
+    incremental updates identified by `U` (first update id since last) and `u`
+    (last update id). Clients seed the local book with the REST `/spot/order_book`
+    or `/futures/{settle}/order_book` snapshot and then apply WS updates whose
+    `U <= baseId + 1 <= u`. A size value of 0 removes the price level.
+  contact:
+    name: Gate.io API Support
+    url: https://www.gate.io/docs/developers/apiv4/ws/en/
+  license:
+    name: Gate.io Terms of Service
+    url: https://www.gate.io/legal/user-agreement
+
+defaultContentType: application/json
+
+servers:
+  spot:
+    url: api.gateio.ws/ws/v4/
+    protocol: wss
+    description: Spot, margin, cross-margin and funding WebSocket endpoint.
+  futures-usdt:
+    url: fx-ws.gateio.ws/v4/ws/usdt
+    protocol: wss
+    description: USDT-settled perpetual futures WebSocket endpoint.
+  futures-btc:
+    url: fx-ws.gateio.ws/v4/ws/btc
+    protocol: wss
+    description: BTC-settled futures WebSocket endpoint.
+  futures-testnet-usdt:
+    url: fx-ws-testnet.gateio.ws/v4/ws/usdt
+    protocol: wss
+    description: Testnet for USDT-settled futures.
+  futures-testnet-btc:
+    url: fx-ws-testnet.gateio.ws/v4/ws/btc
+    protocol: wss
+    description: Testnet for BTC-settled futures.
+
+tags:
+  - name: spot
+    description: Public and private spot/margin channels.
+  - name: futures
+    description: Public and private perpetual / delivery futures channels.
+  - name: public
+    description: Channels that do not require authentication.
+  - name: private
+    description: Channels that require an api_key HMAC-SHA512 auth block.
+  - name: order-book
+    description: Order book channels.
+  - name: market-data
+    description: Tickers, trades, candlesticks.
+
+channels:
+
+  # -----------------------------------------------------------------
+  # Spot - public market data
+  # -----------------------------------------------------------------
+  spot.tickers:
+    description: |
+      High level overview of a spot pair: last trade price, best ask/bid,
+      24h change percentage, and 24h volumes. Public, no auth.
+    servers: [spot]
+    publish:
+      operationId: subscribeSpotTickers
+      summary: Subscribe / unsubscribe to spot tickers.
+      tags: [{ name: spot }, { name: public }, { name: market-data }]
+      message:
+        $ref: '#/components/messages/SpotTickersRequest'
+    subscribe:
+      operationId: onSpotTickersUpdate
+      summary: Spot ticker update notification.
+      message:
+        $ref: '#/components/messages/SpotTickersUpdate'
+
+  spot.trades:
+    description: |
+      Public trade tape for a spot pair. Only the taker side is sent. Public.
+    servers: [spot]
+    publish:
+      operationId: subscribeSpotTrades
+      message:
+        $ref: '#/components/messages/SpotTradesRequest'
+    subscribe:
+      operationId: onSpotTradesUpdate
+      message:
+        $ref: '#/components/messages/SpotTradesUpdate'
+
+  spot.candlesticks:
+    description: |
+      OHLC candlestick stream. Payload is `[interval, currency_pair]`.
+      Intervals: 10s, 1m, 5m, 15m, 30m, 1h, 4h, 8h, 1d, 7d. Public.
+    servers: [spot]
+    publish:
+      operationId: subscribeSpotCandlesticks
+      message:
+        $ref: '#/components/messages/SpotCandlesticksRequest'
+    subscribe:
+      operationId: onSpotCandlesticksUpdate
+      message:
+        $ref: '#/components/messages/SpotCandlesticksUpdate'
+
+  spot.book_ticker:
+    description: |
+      Real-time best bid and best ask updates for a spot pair. Public.
+    servers: [spot]
+    publish:
+      operationId: subscribeSpotBookTicker
+      message:
+        $ref: '#/components/messages/SpotBookTickerRequest'
+    subscribe:
+      operationId: onSpotBookTickerUpdate
+      message:
+        $ref: '#/components/messages/SpotBookTickerUpdate'
+
+  spot.order_book_update:
+    description: |
+      Incremental order book updates. Payload is `[currency_pair, interval]`
+      where interval is `100ms` or `1000ms`. Use the U/u IDs to maintain a
+      local order book against the REST snapshot. Public.
+    servers: [spot]
+    publish:
+      operationId: subscribeSpotOrderBookUpdate
+      message:
+        $ref: '#/components/messages/SpotOrderBookUpdateRequest'
+    subscribe:
+      operationId: onSpotOrderBookUpdate
+      message:
+        $ref: '#/components/messages/SpotOrderBookUpdate'
+
+  spot.order_book:
+    description: |
+      Limited-level full order book snapshot. Payload is `[currency_pair, level, interval]`
+      where level is 5/10/20/50/100 and interval is `100ms` or `1000ms`. Public.
+    servers: [spot]
+    publish:
+      operationId: subscribeSpotOrderBook
+      message:
+        $ref: '#/components/messages/SpotOrderBookRequest'
+    subscribe:
+      operationId: onSpotOrderBookSnapshot
+      message:
+        $ref: '#/components/messages/SpotOrderBookSnapshot'
+
+  spot.ping:
+    description: |
+      Application-layer ping. Sent by the client; server replies with `spot.pong`.
+      Public.
+    servers: [spot]
+    publish:
+      operationId: spotPing
+      message:
+        $ref: '#/components/messages/SpotPing'
+    subscribe:
+      operationId: onSpotPong
+      message:
+        $ref: '#/components/messages/SpotPong'
+
+  # -----------------------------------------------------------------
+  # Spot - private user data
+  # -----------------------------------------------------------------
+  spot.orders:
+    description: |
+      Stream of the authenticated user's spot orders (put / update / finish).
+      Payload is an array of currency pairs. Requires auth.
+    servers: [spot]
+    publish:
+      operationId: subscribeSpotOrders
+      bindings:
+        ws:
+          headers:
+            type: object
+            properties:
+              auth: { $ref: '#/components/schemas/Auth' }
+      message:
+        $ref: '#/components/messages/SpotOrdersRequest'
+    subscribe:
+      operationId: onSpotOrdersUpdate
+      message:
+        $ref: '#/components/messages/SpotOrdersUpdate'
+
+  spot.usertrades:
+    description: |
+      Authenticated user's spot trade executions. Payload is an array of
+      currency pairs. Requires auth.
+    servers: [spot]
+    publish:
+      operationId: subscribeSpotUserTrades
+      message:
+        $ref: '#/components/messages/SpotUserTradesRequest'
+    subscribe:
+      operationId: onSpotUserTradesUpdate
+      message:
+        $ref: '#/components/messages/SpotUserTradesUpdate'
+
+  spot.balances:
+    description: |
+      Spot account balance updates. Subscribe with an empty payload `[]`.
+      Requires auth.
+    servers: [spot]
+    publish:
+      operationId: subscribeSpotBalances
+      message:
+        $ref: '#/components/messages/SpotBalancesRequest'
+    subscribe:
+      operationId: onSpotBalancesUpdate
+      message:
+        $ref: '#/components/messages/SpotBalancesUpdate'
+
+  spot.margin_balances:
+    description: |
+      Isolated margin balance updates per `currency_pair`+`currency`. Requires auth.
+    servers: [spot]
+    publish:
+      operationId: subscribeSpotMarginBalances
+      message:
+        $ref: '#/components/messages/SpotMarginBalancesRequest'
+    subscribe:
+      operationId: onSpotMarginBalancesUpdate
+      message:
+        $ref: '#/components/messages/SpotMarginBalancesUpdate'
+
+  spot.funding_balances:
+    description: |
+      Funding (lending) account balance updates. Requires auth.
+    servers: [spot]
+    publish:
+      operationId: subscribeSpotFundingBalances
+      message:
+        $ref: '#/components/messages/SpotFundingBalancesRequest'
+    subscribe:
+      operationId: onSpotFundingBalancesUpdate
+      message:
+        $ref: '#/components/messages/SpotFundingBalancesUpdate'
+
+  spot.cross_balances:
+    description: |
+      Cross-margin balance updates. Requires auth.
+    servers: [spot]
+    publish:
+      operationId: subscribeSpotCrossBalances
+      message:
+        $ref: '#/components/messages/SpotCrossBalancesRequest'
+    subscribe:
+      operationId: onSpotCrossBalancesUpdate
+      message:
+        $ref: '#/components/messages/SpotCrossBalancesUpdate'
+
+  spot.cross_loan:
+    description: |
+      Cross-margin borrowed and interest updates. Requires auth.
+    servers: [spot]
+    publish:
+      operationId: subscribeSpotCrossLoan
+      message:
+        $ref: '#/components/messages/SpotCrossLoanRequest'
+    subscribe:
+      operationId: onSpotCrossLoanUpdate
+      message:
+        $ref: '#/components/messages/SpotCrossLoanUpdate'
+
+  # -----------------------------------------------------------------
+  # Futures - public market data
+  # -----------------------------------------------------------------
+  futures.tickers:
+    description: |
+      Futures contract ticker: last price, mark price, index price, funding rate,
+      24h volumes. Public.
+    servers: [futures-usdt, futures-btc, futures-testnet-usdt, futures-testnet-btc]
+    publish:
+      operationId: subscribeFuturesTickers
+      message:
+        $ref: '#/components/messages/FuturesTickersRequest'
+    subscribe:
+      operationId: onFuturesTickersUpdate
+      message:
+        $ref: '#/components/messages/FuturesTickersUpdate'
+
+  futures.trades:
+    description: |
+      Public trade tape for a futures contract. Positive size = taker is buyer,
+      negative = seller. Public.
+    servers: [futures-usdt, futures-btc, futures-testnet-usdt, futures-testnet-btc]
+    publish:
+      operationId: subscribeFuturesTrades
+      message:
+        $ref: '#/components/messages/FuturesTradesRequest'
+    subscribe:
+      operationId: onFuturesTradesUpdate
+      message:
+        $ref: '#/components/messages/FuturesTradesUpdate'
+
+  futures.candlesticks:
+    description: |
+      Candlestick stream for futures. Payload `[interval, contract]`. Intervals
+      include 10s, 1m, 5m, 15m, 30m, 1h, 4h, 8h, 1d, 7d. Public.
+    servers: [futures-usdt, futures-btc, futures-testnet-usdt, futures-testnet-btc]
+    publish:
+      operationId: subscribeFuturesCandlesticks
+      message:
+        $ref: '#/components/messages/FuturesCandlesticksRequest'
+    subscribe:
+      operationId: onFuturesCandlesticksUpdate
+      message:
+        $ref: '#/components/messages/FuturesCandlesticksUpdate'
+
+  futures.book_ticker:
+    description: |
+      Real-time best ask / best bid for a futures contract. Public.
+    servers: [futures-usdt, futures-btc, futures-testnet-usdt, futures-testnet-btc]
+    publish:
+      operationId: subscribeFuturesBookTicker
+      message:
+        $ref: '#/components/messages/FuturesBookTickerRequest'
+    subscribe:
+      operationId: onFuturesBookTickerUpdate
+      message:
+        $ref: '#/components/messages/FuturesBookTickerUpdate'
+
+  futures.order_book_update:
+    description: |
+      Incremental futures order book updates. Payload `[contract, frequency, level?]`
+      with frequency 100ms or 1000ms and optional level (5/10/20/50/100). Public.
+    servers: [futures-usdt, futures-btc, futures-testnet-usdt, futures-testnet-btc]
+    publish:
+      operationId: subscribeFuturesOrderBookUpdate
+      message:
+        $ref: '#/components/messages/FuturesOrderBookUpdateRequest'
+    subscribe:
+      operationId: onFuturesOrderBookUpdate
+      message:
+        $ref: '#/components/messages/FuturesOrderBookUpdate'
+
+  futures.order_book:
+    description: |
+      Legacy futures order book. Payload `[contract, limit, interval]` where limit is
+      1/5/10/20/50/100 and interval is "0". Public.
+    servers: [futures-usdt, futures-btc, futures-testnet-usdt, futures-testnet-btc]
+    publish:
+      operationId: subscribeFuturesOrderBook
+      message:
+        $ref: '#/components/messages/FuturesOrderBookRequest'
+    subscribe:
+      operationId: onFuturesOrderBookUpdates
+      message:
+        $ref: '#/components/messages/FuturesOrderBookSnapshot'
+
+  futures.ping:
+    description: |
+      Application-layer ping. Server replies with `futures.pong`. Public.
+    servers: [futures-usdt, futures-btc, futures-testnet-usdt, futures-testnet-btc]
+    publish:
+      operationId: futuresPing
+      message:
+        $ref: '#/components/messages/FuturesPing'
+    subscribe:
+      operationId: onFuturesPong
+      message:
+        $ref: '#/components/messages/FuturesPong'
+
+  # -----------------------------------------------------------------
+  # Futures - private user data
+  # -----------------------------------------------------------------
+  futures.orders:
+    description: |
+      Authenticated user's futures orders. Payload `[user_id, contract]`.
+      Requires auth.
+    servers: [futures-usdt, futures-btc, futures-testnet-usdt, futures-testnet-btc]
+    publish:
+      operationId: subscribeFuturesOrders
+      message:
+        $ref: '#/components/messages/FuturesOrdersRequest'
+    subscribe:
+      operationId: onFuturesOrdersUpdate
+      message:
+        $ref: '#/components/messages/FuturesOrdersUpdate'
+
+  futures.usertrades:
+    description: |
+      Authenticated user's futures trades. Payload `[user_id, contract]`.
+      Requires auth.
+    servers: [futures-usdt, futures-btc, futures-testnet-usdt, futures-testnet-btc]
+    publish:
+      operationId: subscribeFuturesUserTrades
+      message:
+        $ref: '#/components/messages/FuturesUserTradesRequest'
+    subscribe:
+      operationId: onFuturesUserTradesUpdate
+      message:
+        $ref: '#/components/messages/FuturesUserTradesUpdate'
+
+  futures.liquidates:
+    description: |
+      Authenticated user's liquidation events. Payload `[user_id, contract]`.
+      Requires auth.
+    servers: [futures-usdt, futures-btc, futures-testnet-usdt, futures-testnet-btc]
+    publish:
+      operationId: subscribeFuturesLiquidates
+      message:
+        $ref: '#/components/messages/FuturesLiquidatesRequest'
+    subscribe:
+      operationId: onFuturesLiquidatesUpdate
+      message:
+        $ref: '#/components/messages/FuturesLiquidatesUpdate'
+
+  futures.auto_deleverages:
+    description: |
+      Authenticated user's auto-deleverage (ADL) events. Payload `[user_id, contract]`.
+      Requires auth.
+    servers: [futures-usdt, futures-btc, futures-testnet-usdt, futures-testnet-btc]
+    publish:
+      operationId: subscribeFuturesAutoDeleverages
+      message:
+        $ref: '#/components/messages/FuturesAutoDeleveragesRequest'
+    subscribe:
+      operationId: onFuturesAutoDeleveragesUpdate
+      message:
+        $ref: '#/components/messages/FuturesAutoDeleveragesUpdate'
+
+  futures.position_closes:
+    description: |
+      Authenticated user's closed-position pnl events. Payload `[user_id, contract]`.
+      Requires auth.
+    servers: [futures-usdt, futures-btc, futures-testnet-usdt, futures-testnet-btc]
+    publish:
+      operationId: subscribeFuturesPositionCloses
+      message:
+        $ref: '#/components/messages/FuturesPositionClosesRequest'
+    subscribe:
+      operationId: onFuturesPositionClosesUpdate
+      message:
+        $ref: '#/components/messages/FuturesPositionClosesUpdate'
+
+  futures.balances:
+    description: |
+      Authenticated user's futures wallet balance changes. Payload `[user_id]`.
+      Requires auth.
+    servers: [futures-usdt, futures-btc, futures-testnet-usdt, futures-testnet-btc]
+    publish:
+      operationId: subscribeFuturesBalances
+      message:
+        $ref: '#/components/messages/FuturesBalancesRequest'
+    subscribe:
+      operationId: onFuturesBalancesUpdate
+      message:
+        $ref: '#/components/messages/FuturesBalancesUpdate'
+
+  futures.reduce_risk_limits:
+    description: |
+      Notifies the user that their risk limit has been forcibly reduced.
+      Payload `[user_id, contract]`. Requires auth.
+    servers: [futures-usdt, futures-btc, futures-testnet-usdt, futures-testnet-btc]
+    publish:
+      operationId: subscribeFuturesReduceRiskLimits
+      message:
+        $ref: '#/components/messages/FuturesReduceRiskLimitsRequest'
+    subscribe:
+      operationId: onFuturesReduceRiskLimitsUpdate
+      message:
+        $ref: '#/components/messages/FuturesReduceRiskLimitsUpdate'
+
+  futures.positions:
+    description: |
+      Authenticated user's futures position updates. Payload `[user_id, contract]`.
+      Requires auth.
+    servers: [futures-usdt, futures-btc, futures-testnet-usdt, futures-testnet-btc]
+    publish:
+      operationId: subscribeFuturesPositions
+      message:
+        $ref: '#/components/messages/FuturesPositionsRequest'
+    subscribe:
+      operationId: onFuturesPositionsUpdate
+      message:
+        $ref: '#/components/messages/FuturesPositionsUpdate'
+
+  futures.autoorders:
+    description: |
+      Authenticated user's conditional / trigger orders. Payload `[user_id, contract]`.
+      Requires auth.
+    servers: [futures-usdt, futures-btc, futures-testnet-usdt, futures-testnet-btc]
+    publish:
+      operationId: subscribeFuturesAutoOrders
+      message:
+        $ref: '#/components/messages/FuturesAutoOrdersRequest'
+    subscribe:
+      operationId: onFuturesAutoOrdersUpdate
+      message:
+        $ref: '#/components/messages/FuturesAutoOrdersUpdate'
+
+components:
+
+  schemas:
+
+    Auth:
+      type: object
+      description: HMAC-SHA512 auth block required on private channel requests.
+      required: [method, KEY, SIGN]
+      properties:
+        method:
+          type: string
+          enum: [api_key]
+        KEY:
+          type: string
+          description: Gate APIv4 user API key.
+        SIGN:
+          type: string
+          description: |
+            HexEncode(HMAC_SHA512(api_secret,
+              "channel=<channel>&event=<event>&time=<time>"))
+
+    RequestEnvelope:
+      type: object
+      required: [time, channel, event]
+      properties:
+        time:    { type: integer, description: Request time in seconds. Must be within 60s of server clock. }
+        id:      { type: integer, description: Optional client request id echoed back by server. }
+        channel: { type: string }
+        event:
+          type: string
+          enum: [subscribe, unsubscribe]
+        payload:
+          type: array
+          items: { type: string }
+        auth:
+          $ref: '#/components/schemas/Auth'
+
+    UpdateEnvelope:
+      type: object
+      description: Server -> client notification envelope.
+      required: [time, channel, event]
+      properties:
+        time:    { type: integer }
+        time_ms: { type: integer }
+        channel: { type: string }
+        event:
+          type: string
+          enum: [subscribe, unsubscribe, update, all, '']
+        error:
+          oneOf:
+            - type: 'null'
+            - type: object
+              properties:
+                code:    { type: integer }
+                message: { type: string }
+        result: {}
+
+    # ----- spot result objects -----
+    SpotTickerResult:
+      type: object
+      properties:
+        currency_pair:     { type: string }
+        last:              { type: string }
+        lowest_ask:        { type: string }
+        highest_bid:       { type: string }
+        change_percentage: { type: string }
+        base_volume:       { type: string }
+        quote_volume:      { type: string }
+        high_24h:          { type: string }
+        low_24h:           { type: string }
+
+    SpotTradeResult:
+      type: object
+      properties:
+        id:              { type: integer }
+        create_time:     { type: integer }
+        create_time_ms:  { type: string }
+        side:            { type: string, enum: [buy, sell] }
+        currency_pair:   { type: string }
+        amount:          { type: string }
+        price:           { type: string }
+
+    SpotCandlestickResult:
+      type: object
+      properties:
+        t: { type: string, description: Unix timestamp in seconds. }
+        v: { type: string, description: Total volume. }
+        c: { type: string, description: Close price. }
+        h: { type: string, description: Highest price. }
+        l: { type: string, description: Lowest price. }
+        o: { type: string, description: Open price. }
+        n: { type: string, description: Subscription name "<interval>_<cp>". }
+        a: { type: string, description: Base currency trading amount. }
+
+    SpotBookTickerResult:
+      type: object
+      properties:
+        t: { type: integer, description: Update time in ms. }
+        u: { type: integer, description: Order book update id. }
+        s: { type: string, description: Currency pair. }
+        b: { type: string, description: Best bid price. }
+        B: { type: string, description: Best bid size. }
+        a: { type: string, description: Best ask price. }
+        A: { type: string, description: Best ask size. }
+
+    SpotOrderBookUpdateResult:
+      type: object
+      properties:
+        t: { type: integer }
+        e: { type: string, description: Reserved, ignore. }
+        E: { type: integer, description: Deprecated; use t. }
+        s: { type: string, description: Currency pair. }
+        U: { type: integer, description: First update id since previous notification. }
+        u: { type: integer, description: Last update id in this notification. }
+        b:
+          type: array
+          description: Changed bids, [price, size]. size=0 removes the level.
+          items:
+            type: array
+            items: { type: string }
+        a:
+          type: array
+          description: Changed asks, [price, size]. size=0 removes the level.
+          items:
+            type: array
+            items: { type: string }
+
+    SpotOrderBookSnapshotResult:
+      type: object
+      properties:
+        t: { type: integer }
+        lastUpdateId: { type: integer }
+        s: { type: string }
+        bids:
+          type: array
+          items:
+            type: array
+            items: { type: string }
+        asks:
+          type: array
+          items:
+            type: array
+            items: { type: string }
+
+    SpotOrderResult:
+      type: object
+      properties:
+        id:                    { type: string }
+        user:                  { type: integer }
+        text:                  { type: string }
+        create_time:           { type: string }
+        create_time_ms:        { type: string }
+        update_time:           { type: string }
+        update_time_ms:        { type: string }
+        event:                 { type: string, enum: [put, update, finish] }
+        currency_pair:         { type: string }
+        type:                  { type: string }
+        account:               { type: string }
+        side:                  { type: string }
+        amount:                { type: string }
+        price:                 { type: string }
+        time_in_force:         { type: string }
+        left:                  { type: string }
+        filled_total:          { type: string }
+        avg_deal_price:        { type: string }
+        fee:                   { type: string }
+        fee_currency:          { type: string }
+        point_fee:             { type: string }
+        gt_fee:                { type: string }
+        gt_discount:           { type: boolean }
+        rebated_fee:           { type: string }
+        rebated_fee_currency:  { type: string }
+
+    SpotUserTradeResult:
+      type: object
+      properties:
+        id:              { type: integer }
+        user_id:         { type: integer }
+        order_id:        { type: string }
+        currency_pair:   { type: string }
+        create_time:     { type: integer }
+        create_time_ms:  { type: string }
+        side:            { type: string }
+        amount:          { type: string }
+        role:            { type: string, enum: [maker, taker] }
+        price:           { type: string }
+        fee:             { type: string }
+        point_fee:       { type: string }
+        gt_fee:          { type: string }
+        text:            { type: string }
+
+    SpotBalanceResult:
+      type: object
+      properties:
+        timestamp:     { type: string }
+        timestamp_ms:  { type: string }
+        user:          { type: string }
+        currency:      { type: string }
+        change:        { type: string }
+        total:         { type: string }
+        available:     { type: string }
+        freeze:        { type: string }
+        freeze_change: { type: string }
+        change_type:   { type: string }
+
+    SpotMarginBalanceResult:
+      type: object
+      properties:
+        timestamp:     { type: string }
+        timestamp_ms:  { type: string }
+        user:          { type: string }
+        currency_pair: { type: string }
+        currency:      { type: string }
+        change:        { type: string }
+        available:     { type: string }
+        freeze:        { type: string }
+        borrowed:      { type: string }
+        interest:      { type: string }
+
+    SpotFundingBalanceResult:
+      type: object
+      properties:
+        timestamp:    { type: string }
+        timestamp_ms: { type: string }
+        user:         { type: string }
+        currency:     { type: string }
+        change:       { type: string }
+        freeze:       { type: string }
+        lent:         { type: string }
+
+    SpotCrossBalanceResult:
+      type: object
+      properties:
+        timestamp:    { type: string }
+        timestamp_ms: { type: string }
+        user:         { type: string }
+        currency:     { type: string }
+        change:       { type: string }
+        total:        { type: string }
+        available:    { type: string }
+
+    SpotCrossLoanResult:
+      type: object
+      properties:
+        timestamp:  { type: integer }
+        user:       { type: string }
+        currency:   { type: string }
+        change:     { type: string }
+        total:      { type: string }
+        available:  { type: string }
+        borrowed:   { type: string }
+        interest:   { type: string }
+
+    # ----- futures result objects -----
+    FuturesTickerResult:
+      type: object
+      properties:
+        contract:                { type: string }
+        last:                    { type: string }
+        change_percentage:       { type: string }
+        funding_rate:            { type: string }
+        funding_rate_indicative: { type: string }
+        mark_price:              { type: string }
+        index_price:             { type: string }
+        total_size:              { type: string }
+        volume_24h:              { type: string }
+        volume_24h_btc:          { type: string }
+        volume_24h_usd:          { type: string }
+        quanto_base_rate:        { type: string }
+        volume_24h_quote:        { type: string }
+        volume_24h_settle:       { type: string }
+        volume_24h_base:         { type: string }
+        low_24h:                 { type: string }
+        high_24h:                { type: string }
+
+    FuturesTradeResult:
+      type: object
+      properties:
+        size:           { type: integer, description: Positive = taker is buyer, negative = seller. }
+        id:             { type: integer }
+        create_time:    { type: integer }
+        create_time_ms: { type: integer }
+        price:          { type: string }
+        contract:       { type: string }
+
+    FuturesCandlestickResult:
+      type: object
+      properties:
+        t: { type: integer, description: Time. }
+        v: { type: integer, description: Volume. }
+        c: { type: string }
+        h: { type: string }
+        l: { type: string }
+        o: { type: string }
+        n: { type: string, description: "<interval>_<contract>" }
+
+    FuturesBookTickerResult:
+      type: object
+      properties:
+        t: { type: integer }
+        u: { type: integer }
+        s: { type: string }
+        b: { type: string }
+        B: { type: integer }
+        a: { type: string }
+        A: { type: integer }
+
+    FuturesOrderBookUpdateResult:
+      type: object
+      properties:
+        t: { type: integer }
+        s: { type: string }
+        U: { type: integer }
+        u: { type: integer }
+        b:
+          type: array
+          items:
+            type: object
+            properties:
+              p: { type: string }
+              s: { type: integer }
+        a:
+          type: array
+          items:
+            type: object
+            properties:
+              p: { type: string }
+              s: { type: integer }
+
+    FuturesOrderBookSnapshotResult:
+      description: |
+        For the `all` event the result is a snapshot object; for `update` events
+        it is an array of price-level diffs.
+      oneOf:
+        - type: object
+          properties:
+            t:        { type: integer }
+            contract: { type: string }
+            id:       { type: integer }
+            asks:
+              type: array
+              items:
+                type: object
+                properties:
+                  p: { type: string }
+                  s: { type: integer }
+            bids:
+              type: array
+              items:
+                type: object
+                properties:
+                  p: { type: string }
+                  s: { type: integer }
+        - type: array
+          items:
+            type: object
+            properties:
+              p:  { type: string }
+              s:  { type: integer }
+              c:  { type: string, description: Contract name. }
+              id: { type: integer }
+
+    FuturesOrderResult:
+      type: object
+      properties:
+        contract:        { type: string }
+        create_time:     { type: integer }
+        create_time_ms:  { type: integer }
+        fill_price:      { type: number }
+        finish_as:       { type: string }
+        finish_time:     { type: integer }
+        finish_time_ms:  { type: integer }
+        iceberg:         { type: integer }
+        id:              { type: integer }
+        is_close:        { type: boolean }
+        is_liq:          { type: boolean }
+        is_reduce_only:  { type: boolean }
+        left:            { type: integer }
+        mkfr:            { type: number }
+        price:           { type: number }
+        refr:            { type: number }
+        refu:            { type: integer }
+        size:            { type: integer }
+        status:          { type: string }
+        text:            { type: string }
+        tif:             { type: string }
+        tkfr:            { type: number }
+        user:            { type: string }
+
+    FuturesUserTradeResult:
+      type: object
+      properties:
+        id:             { type: string }
+        create_time:    { type: integer }
+        create_time_ms: { type: integer }
+        contract:       { type: string }
+        order_id:       { type: string }
+        size:           { type: integer }
+        price:          { type: string }
+        role:           { type: string, enum: [maker, taker] }
+        text:           { type: string }
+        fee:            { type: number }
+        point_fee:      { type: number }
+
+    FuturesLiquidateResult:
+      type: object
+      properties:
+        entry_price:  { type: number }
+        fill_price:   { type: number }
+        left:         { type: integer }
+        leverage:     { type: number }
+        liq_price:    { type: number }
+        margin:       { type: number }
+        mark_price:   { type: number }
+        order_id:     { type: integer }
+        order_price:  { type: number }
+        size:         { type: integer }
+        time:         { type: integer }
+        time_ms:      { type: integer }
+        contract:     { type: string }
+        user:         { type: string }
+
+    FuturesAutoDeleverageResult:
+      type: object
+      properties:
+        entry_price:    { type: number }
+        fill_price:     { type: number }
+        position_size:  { type: integer }
+        trade_size:     { type: integer }
+        time:           { type: integer }
+        time_ms:        { type: integer }
+        contract:       { type: string }
+        user:           { type: string }
+
+    FuturesPositionCloseResult:
+      type: object
+      properties:
+        contract: { type: string }
+        pnl:      { type: number }
+        side:     { type: string, enum: [long, short] }
+        text:     { type: string }
+        time:     { type: integer }
+        time_ms:  { type: integer }
+        user:     { type: string }
+
+    FuturesBalanceResult:
+      type: object
+      properties:
+        balance: { type: number }
+        change:  { type: number }
+        text:    { type: string }
+        time:    { type: integer }
+        time_ms: { type: integer }
+        type:    { type: string }
+        user:    { type: string }
+
+    FuturesReduceRiskLimitResult:
+      type: object
+      properties:
+        cancel_orders:    { type: integer }
+        contract:         { type: string }
+        leverage_max:     { type: integer }
+        liq_price:        { type: number }
+        maintenance_rate: { type: number }
+        risk_limit:       { type: integer }
+        time:             { type: integer }
+        time_ms:          { type: integer }
+        user:             { type: string }
+
+    FuturesPositionResult:
+      type: object
+      properties:
+        contract:              { type: string }
+        cross_leverage_limit:  { type: number }
+        entry_price:           { type: number }
+        history_pnl:           { type: number }
+        history_point:         { type: number }
+        last_close_pnl:        { type: number }
+        leverage:              { type: number }
+        leverage_max:          { type: number }
+        liq_price:             { type: number }
+        maintenance_rate:      { type: number }
+        margin:                { type: number }
+        mode:                  { type: string }
+        realised_pnl:          { type: number }
+        realised_point:        { type: number }
+        risk_limit:            { type: integer }
+        size:                  { type: integer }
+        time:                  { type: integer }
+        time_ms:               { type: integer }
+        user:                  { type: string }
+
+    FuturesAutoOrderResult:
+      type: object
+      properties:
+        user: { type: integer }
+        trigger:
+          type: object
+          properties:
+            strategy_type: { type: integer }
+            price_type:    { type: integer }
+            price:         { type: string }
+            rule:          { type: integer }
+            expiration:    { type: integer }
+        initial:
+          type: object
+          properties:
+            contract:       { type: string }
+            size:           { type: integer }
+            price:          { type: string }
+            tif:            { type: string }
+            text:           { type: string }
+            iceberg:        { type: integer }
+            is_close:       { type: boolean }
+            is_reduce_only: { type: boolean }
+        id:              { type: integer }
+        trade_id:        { type: integer }
+        status:          { type: string }
+        reason:          { type: string }
+        create_time:     { type: integer }
+        name:            { type: string }
+        is_stop_order:   { type: boolean }
+        stop_trigger:
+          type: object
+          properties:
+            rule:          { type: integer }
+            trigger_price: { type: string }
+            order_price:   { type: string }
+        order_type:  { type: string }
+        me_order_id: { type: string }
+
+  messages:
+
+    # ----- spot requests -----
+    SpotTickersRequest:
+      name: SpotTickersRequest
+      title: Subscribe to spot.tickers
+      summary: Subscribe / unsubscribe to spot ticker pushes for one or more pairs.
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            properties:
+              channel: { const: spot.tickers }
+              payload:
+                description: List of currency pairs.
+                type: array
+                items: { type: string }
+      examples:
+        - name: subscribe-btc-usdt
+          payload:
+            time: 1611541000
+            channel: spot.tickers
+            event: subscribe
+            payload: [BTC_USDT]
+
+    SpotTradesRequest:
+      name: SpotTradesRequest
+      title: Subscribe to spot.trades
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            properties:
+              channel: { const: spot.trades }
+              payload:
+                type: array
+                items: { type: string }
+
+    SpotCandlesticksRequest:
+      name: SpotCandlesticksRequest
+      title: Subscribe to spot.candlesticks
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            properties:
+              channel: { const: spot.candlesticks }
+              payload:
+                description: "[interval, currency_pair]"
+                type: array
+                items: { type: string }
+
+    SpotBookTickerRequest:
+      name: SpotBookTickerRequest
+      title: Subscribe to spot.book_ticker
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            properties:
+              channel: { const: spot.book_ticker }
+              payload:
+                type: array
+                items: { type: string }
+
+    SpotOrderBookUpdateRequest:
+      name: SpotOrderBookUpdateRequest
+      title: Subscribe to spot.order_book_update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            properties:
+              channel: { const: spot.order_book_update }
+              payload:
+                description: "[currency_pair, interval]"
+                type: array
+                items: { type: string }
+
+    SpotOrderBookRequest:
+      name: SpotOrderBookRequest
+      title: Subscribe to spot.order_book
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            properties:
+              channel: { const: spot.order_book }
+              payload:
+                description: "[currency_pair, level, interval]"
+                type: array
+                items: { type: string }
+
+    SpotPing:
+      name: SpotPing
+      title: spot.ping
+      payload:
+        type: object
+        properties:
+          time:    { type: integer }
+          channel: { const: spot.ping }
+
+    SpotPong:
+      name: SpotPong
+      title: spot.pong
+      payload:
+        type: object
+        properties:
+          time:    { type: integer }
+          time_ms: { type: integer }
+          channel: { const: spot.pong }
+          event:   { type: string }
+          error: {}
+          result: { type: 'null' }
+
+    SpotOrdersRequest:
+      name: SpotOrdersRequest
+      title: Subscribe to spot.orders (private)
+      description: Requires `auth` block.
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            required: [auth]
+            properties:
+              channel: { const: spot.orders }
+              payload:
+                type: array
+                items: { type: string }
+
+    SpotUserTradesRequest:
+      name: SpotUserTradesRequest
+      title: Subscribe to spot.usertrades (private)
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            required: [auth]
+            properties:
+              channel: { const: spot.usertrades }
+              payload:
+                type: array
+                items: { type: string }
+
+    SpotBalancesRequest:
+      name: SpotBalancesRequest
+      title: Subscribe to spot.balances (private)
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            required: [auth]
+            properties:
+              channel: { const: spot.balances }
+              payload:
+                type: array
+                items: { type: string }
+
+    SpotMarginBalancesRequest:
+      name: SpotMarginBalancesRequest
+      title: Subscribe to spot.margin_balances (private)
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            required: [auth]
+            properties:
+              channel: { const: spot.margin_balances }
+              payload:
+                type: array
+                items: { type: string }
+
+    SpotFundingBalancesRequest:
+      name: SpotFundingBalancesRequest
+      title: Subscribe to spot.funding_balances (private)
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            required: [auth]
+            properties:
+              channel: { const: spot.funding_balances }
+              payload:
+                type: array
+                items: { type: string }
+
+    SpotCrossBalancesRequest:
+      name: SpotCrossBalancesRequest
+      title: Subscribe to spot.cross_balances (private)
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            required: [auth]
+            properties:
+              channel: { const: spot.cross_balances }
+              payload:
+                type: array
+                items: { type: string }
+
+    SpotCrossLoanRequest:
+      name: SpotCrossLoanRequest
+      title: Subscribe to spot.cross_loan (private)
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            required: [auth]
+            properties:
+              channel: { const: spot.cross_loan }
+              payload:
+                type: array
+                items: { type: string }
+
+    # ----- spot updates -----
+    SpotTickersUpdate:
+      name: SpotTickersUpdate
+      title: spot.tickers update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: spot.tickers }
+              event:   { const: update }
+              result:  { $ref: '#/components/schemas/SpotTickerResult' }
+
+    SpotTradesUpdate:
+      name: SpotTradesUpdate
+      title: spot.trades update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: spot.trades }
+              event:   { const: update }
+              result:  { $ref: '#/components/schemas/SpotTradeResult' }
+
+    SpotCandlesticksUpdate:
+      name: SpotCandlesticksUpdate
+      title: spot.candlesticks update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: spot.candlesticks }
+              event:   { const: update }
+              result:  { $ref: '#/components/schemas/SpotCandlestickResult' }
+
+    SpotBookTickerUpdate:
+      name: SpotBookTickerUpdate
+      title: spot.book_ticker update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: spot.book_ticker }
+              event:   { const: update }
+              result:  { $ref: '#/components/schemas/SpotBookTickerResult' }
+
+    SpotOrderBookUpdate:
+      name: SpotOrderBookUpdate
+      title: spot.order_book_update update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: spot.order_book_update }
+              event:   { const: update }
+              result:  { $ref: '#/components/schemas/SpotOrderBookUpdateResult' }
+
+    SpotOrderBookSnapshot:
+      name: SpotOrderBookSnapshot
+      title: spot.order_book snapshot
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: spot.order_book }
+              event:   { const: update }
+              result:  { $ref: '#/components/schemas/SpotOrderBookSnapshotResult' }
+
+    SpotOrdersUpdate:
+      name: SpotOrdersUpdate
+      title: spot.orders update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: spot.orders }
+              event:   { const: update }
+              result:
+                type: array
+                items: { $ref: '#/components/schemas/SpotOrderResult' }
+
+    SpotUserTradesUpdate:
+      name: SpotUserTradesUpdate
+      title: spot.usertrades update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: spot.usertrades }
+              event:   { const: update }
+              result:
+                type: array
+                items: { $ref: '#/components/schemas/SpotUserTradeResult' }
+
+    SpotBalancesUpdate:
+      name: SpotBalancesUpdate
+      title: spot.balances update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: spot.balances }
+              event:   { const: update }
+              result:
+                type: array
+                items: { $ref: '#/components/schemas/SpotBalanceResult' }
+
+    SpotMarginBalancesUpdate:
+      name: SpotMarginBalancesUpdate
+      title: spot.margin_balances update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: spot.margin_balances }
+              event:   { const: update }
+              result:
+                type: array
+                items: { $ref: '#/components/schemas/SpotMarginBalanceResult' }
+
+    SpotFundingBalancesUpdate:
+      name: SpotFundingBalancesUpdate
+      title: spot.funding_balances update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: spot.funding_balances }
+              event:   { const: update }
+              result:
+                type: array
+                items: { $ref: '#/components/schemas/SpotFundingBalanceResult' }
+
+    SpotCrossBalancesUpdate:
+      name: SpotCrossBalancesUpdate
+      title: spot.cross_balances update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: spot.cross_balances }
+              event:   { const: update }
+              result:
+                type: array
+                items: { $ref: '#/components/schemas/SpotCrossBalanceResult' }
+
+    SpotCrossLoanUpdate:
+      name: SpotCrossLoanUpdate
+      title: spot.cross_loan update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: spot.cross_loan }
+              event:   { const: update }
+              result:  { $ref: '#/components/schemas/SpotCrossLoanResult' }
+
+    # ----- futures requests -----
+    FuturesTickersRequest:
+      name: FuturesTickersRequest
+      title: Subscribe to futures.tickers
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.tickers }
+              payload:
+                type: array
+                items: { type: string }
+
+    FuturesTradesRequest:
+      name: FuturesTradesRequest
+      title: Subscribe to futures.trades
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.trades }
+              payload:
+                type: array
+                items: { type: string }
+
+    FuturesCandlesticksRequest:
+      name: FuturesCandlesticksRequest
+      title: Subscribe to futures.candlesticks
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.candlesticks }
+              payload:
+                description: "[interval, contract]"
+                type: array
+                items: { type: string }
+
+    FuturesBookTickerRequest:
+      name: FuturesBookTickerRequest
+      title: Subscribe to futures.book_ticker
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.book_ticker }
+              payload:
+                type: array
+                items: { type: string }
+
+    FuturesOrderBookUpdateRequest:
+      name: FuturesOrderBookUpdateRequest
+      title: Subscribe to futures.order_book_update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.order_book_update }
+              payload:
+                description: "[contract, frequency, level?]"
+                type: array
+                items: { type: string }
+
+    FuturesOrderBookRequest:
+      name: FuturesOrderBookRequest
+      title: Subscribe to futures.order_book (legacy)
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.order_book }
+              payload:
+                description: "[contract, limit, interval]"
+                type: array
+                items: { type: string }
+
+    FuturesPing:
+      name: FuturesPing
+      title: futures.ping
+      payload:
+        type: object
+        properties:
+          time:    { type: integer }
+          channel: { const: futures.ping }
+
+    FuturesPong:
+      name: FuturesPong
+      title: futures.pong
+      payload:
+        type: object
+        properties:
+          time:    { type: integer }
+          time_ms: { type: integer }
+          channel: { const: futures.pong }
+          event:   { type: string }
+          error: {}
+          result: { type: 'null' }
+
+    FuturesOrdersRequest:
+      name: FuturesOrdersRequest
+      title: Subscribe to futures.orders (private)
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            required: [auth]
+            properties:
+              channel: { const: futures.orders }
+              payload:
+                description: "[user_id, contract]"
+                type: array
+                items: { type: string }
+
+    FuturesUserTradesRequest:
+      name: FuturesUserTradesRequest
+      title: Subscribe to futures.usertrades (private)
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            required: [auth]
+            properties:
+              channel: { const: futures.usertrades }
+              payload:
+                type: array
+                items: { type: string }
+
+    FuturesLiquidatesRequest:
+      name: FuturesLiquidatesRequest
+      title: Subscribe to futures.liquidates (private)
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            required: [auth]
+            properties:
+              channel: { const: futures.liquidates }
+              payload:
+                type: array
+                items: { type: string }
+
+    FuturesAutoDeleveragesRequest:
+      name: FuturesAutoDeleveragesRequest
+      title: Subscribe to futures.auto_deleverages (private)
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            required: [auth]
+            properties:
+              channel: { const: futures.auto_deleverages }
+              payload:
+                type: array
+                items: { type: string }
+
+    FuturesPositionClosesRequest:
+      name: FuturesPositionClosesRequest
+      title: Subscribe to futures.position_closes (private)
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            required: [auth]
+            properties:
+              channel: { const: futures.position_closes }
+              payload:
+                type: array
+                items: { type: string }
+
+    FuturesBalancesRequest:
+      name: FuturesBalancesRequest
+      title: Subscribe to futures.balances (private)
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            required: [auth]
+            properties:
+              channel: { const: futures.balances }
+              payload:
+                description: "[user_id]"
+                type: array
+                items: { type: string }
+
+    FuturesReduceRiskLimitsRequest:
+      name: FuturesReduceRiskLimitsRequest
+      title: Subscribe to futures.reduce_risk_limits (private)
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            required: [auth]
+            properties:
+              channel: { const: futures.reduce_risk_limits }
+              payload:
+                type: array
+                items: { type: string }
+
+    FuturesPositionsRequest:
+      name: FuturesPositionsRequest
+      title: Subscribe to futures.positions (private)
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            required: [auth]
+            properties:
+              channel: { const: futures.positions }
+              payload:
+                type: array
+                items: { type: string }
+
+    FuturesAutoOrdersRequest:
+      name: FuturesAutoOrdersRequest
+      title: Subscribe to futures.autoorders (private)
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/RequestEnvelope'
+          - type: object
+            required: [auth]
+            properties:
+              channel: { const: futures.autoorders }
+              payload:
+                type: array
+                items: { type: string }
+
+    # ----- futures updates -----
+    FuturesTickersUpdate:
+      name: FuturesTickersUpdate
+      title: futures.tickers update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.tickers }
+              event:   { const: update }
+              result:
+                type: array
+                items: { $ref: '#/components/schemas/FuturesTickerResult' }
+
+    FuturesTradesUpdate:
+      name: FuturesTradesUpdate
+      title: futures.trades update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.trades }
+              event:   { const: update }
+              result:
+                type: array
+                items: { $ref: '#/components/schemas/FuturesTradeResult' }
+
+    FuturesCandlesticksUpdate:
+      name: FuturesCandlesticksUpdate
+      title: futures.candlesticks update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.candlesticks }
+              event:   { const: update }
+              result:
+                type: array
+                items: { $ref: '#/components/schemas/FuturesCandlestickResult' }
+
+    FuturesBookTickerUpdate:
+      name: FuturesBookTickerUpdate
+      title: futures.book_ticker update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.book_ticker }
+              event:   { const: update }
+              result:  { $ref: '#/components/schemas/FuturesBookTickerResult' }
+
+    FuturesOrderBookUpdate:
+      name: FuturesOrderBookUpdate
+      title: futures.order_book_update update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.order_book_update }
+              event:   { const: update }
+              result:  { $ref: '#/components/schemas/FuturesOrderBookUpdateResult' }
+
+    FuturesOrderBookSnapshot:
+      name: FuturesOrderBookSnapshot
+      title: futures.order_book legacy snapshot / update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.order_book }
+              event:
+                type: string
+                enum: [update, all]
+              result:  { $ref: '#/components/schemas/FuturesOrderBookSnapshotResult' }
+
+    FuturesOrdersUpdate:
+      name: FuturesOrdersUpdate
+      title: futures.orders update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.orders }
+              event:   { const: update }
+              result:
+                type: array
+                items: { $ref: '#/components/schemas/FuturesOrderResult' }
+
+    FuturesUserTradesUpdate:
+      name: FuturesUserTradesUpdate
+      title: futures.usertrades update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.usertrades }
+              event:   { const: update }
+              result:
+                type: array
+                items: { $ref: '#/components/schemas/FuturesUserTradeResult' }
+
+    FuturesLiquidatesUpdate:
+      name: FuturesLiquidatesUpdate
+      title: futures.liquidates update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.liquidates }
+              event:   { const: update }
+              result:
+                type: array
+                items: { $ref: '#/components/schemas/FuturesLiquidateResult' }
+
+    FuturesAutoDeleveragesUpdate:
+      name: FuturesAutoDeleveragesUpdate
+      title: futures.auto_deleverages update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.auto_deleverages }
+              event:   { const: update }
+              result:
+                type: array
+                items: { $ref: '#/components/schemas/FuturesAutoDeleverageResult' }
+
+    FuturesPositionClosesUpdate:
+      name: FuturesPositionClosesUpdate
+      title: futures.position_closes update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.position_closes }
+              event:   { const: update }
+              result:
+                type: array
+                items: { $ref: '#/components/schemas/FuturesPositionCloseResult' }
+
+    FuturesBalancesUpdate:
+      name: FuturesBalancesUpdate
+      title: futures.balances update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.balances }
+              event:   { const: update }
+              result:
+                type: array
+                items: { $ref: '#/components/schemas/FuturesBalanceResult' }
+
+    FuturesReduceRiskLimitsUpdate:
+      name: FuturesReduceRiskLimitsUpdate
+      title: futures.reduce_risk_limits update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.reduce_risk_limits }
+              event:   { const: update }
+              result:
+                type: array
+                items: { $ref: '#/components/schemas/FuturesReduceRiskLimitResult' }
+
+    FuturesPositionsUpdate:
+      name: FuturesPositionsUpdate
+      title: futures.positions update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.positions }
+              event:   { const: update }
+              result:
+                type: array
+                items: { $ref: '#/components/schemas/FuturesPositionResult' }
+
+    FuturesAutoOrdersUpdate:
+      name: FuturesAutoOrdersUpdate
+      title: futures.autoorders update
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/UpdateEnvelope'
+          - type: object
+            properties:
+              channel: { const: futures.autoorders }
+              event:   { const: update }
+              result:
+                type: array
+                items: { $ref: '#/components/schemas/FuturesAutoOrderResult' }
