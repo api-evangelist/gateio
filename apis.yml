@@ -23,6 +23,8 @@ apis:
       - type: Documentation
         url: https://www.gate.io/api2
 common:
+  - type: DomainSecurity
+    url: security/gateio-domain-security.yml
   - type: Website
     url: https://www.gate.io/api2
   - type: PublicAPIsListing
